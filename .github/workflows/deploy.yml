@@ -1,0 +1,172 @@
+# Build the chat app, push it to ECR, and deploy it to the EC2 instance.
+#
+# Runs on every push to main (and manually from the Actions tab).
+#
+# One-time setup (GitHub repo -> Settings -> Secrets and variables -> Actions):
+#   Secrets:    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#               An IAM user allowed to: push to the ECR repo, ec2:DescribeInstances,
+#               ec2:AuthorizeSecurityGroupIngress / RevokeSecurityGroupIngress, and
+#               ec2-instance-connect:SendSSHPublicKey.
+#   Variables (optional): FREE_MESSAGE_LIMIT (default 10), PAYMENT_URL
+#
+# The instance must already have Docker and an ~/.aws/credentials file for ec2-user
+# (the app container mounts it read-only so boto3 can call Bedrock).
+
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deployments at the same time.
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: devleap-ecr-shoshana
+  INSTANCE_ID: i-0e169ccaf011ca154
+  CONTAINER_NAME: develeap-chat
+  HOST_PORT: "8001"          # public port on the instance -> app port 8000 in the container
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY"
+          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+          echo "uri=$IMAGE:$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+
+      - name: Look up the instance
+        id: instance
+        run: |
+          read -r IP AZ SG <<< "$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].[PublicIpAddress,Placement.AvailabilityZone,SecurityGroups[0].GroupId]' \
+            --output text)"
+          if [ -z "$IP" ] || [ "$IP" = "None" ]; then
+            echo "::error::Instance $INSTANCE_ID has no public IP - is it running?"; exit 1
+          fi
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "sg=$SG" >> "$GITHUB_OUTPUT"
+          echo "runner_ip=$(curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      # SSH is opened to this runner's IP only, for the length of the deploy.
+      - name: Open SSH for this runner
+        run: |
+          aws ec2 authorize-security-group-ingress --group-id "${{ steps.instance.outputs.sg }}" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${{ steps.instance.outputs.runner_ip }}/32,Description=github-actions-deploy}]"
+
+      - name: Deploy on the instance
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          REGISTRY: ${{ steps.image.outputs.registry }}
+          IP: ${{ steps.instance.outputs.ip }}
+          AZ: ${{ steps.instance.outputs.az }}
+          FREE_MESSAGE_LIMIT: ${{ vars.FREE_MESSAGE_LIMIT || '10' }}
+          PAYMENT_URL: ${{ vars.PAYMENT_URL }}
+        run: |
+          set -euo pipefail
+          # Throw-away SSH key, authorised on the instance for 60 seconds via EC2 Instance Connect.
+          ssh-keygen -q -t ed25519 -N "" -f ./deploy_key
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" --instance-os-user ec2-user \
+            --ssh-public-key "file://deploy_key.pub" > /dev/null
+
+          SSH="ssh -i ./deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 ec2-user@$IP"
+
+          # Hand the instance a short-lived ECR token so it can pull the new image.
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | $SSH "docker login --username AWS --password-stdin $REGISTRY"
+
+          $SSH "IMAGE_URI='$IMAGE_URI' CONTAINER_NAME='$CONTAINER_NAME' HOST_PORT='$HOST_PORT' \
+                AWS_REGION='$AWS_REGION' FREE_MESSAGE_LIMIT='$FREE_MESSAGE_LIMIT' PAYMENT_URL='$PAYMENT_URL' \
+                bash -s" <<'REMOTE'
+          set -uo pipefail
+
+          # Remember what is running now so a bad release can be rolled back.
+          PREV_IMAGE=$(docker inspect -f '{{.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)
+
+          docker pull "$IMAGE_URI"
+
+          start() {
+            docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+            docker run -d --name "$CONTAINER_NAME" --restart unless-stopped \
+              -p "$HOST_PORT:8000" \
+              -e AWS_REGION="$AWS_REGION" -e AWS_VERIFY_SSL=true \
+              -e FREE_MESSAGE_LIMIT="$FREE_MESSAGE_LIMIT" -e PAYMENT_URL="$PAYMENT_URL" \
+              -v chat-data:/data \
+              -v /home/ec2-user/.aws:/home/appuser/.aws:ro \
+              "$1" >/dev/null
+          }
+
+          healthy() {
+            for _ in $(seq 1 20); do
+              curl -fsS -o /dev/null "http://localhost:$HOST_PORT/login" && return 0
+              sleep 3
+            done
+            return 1
+          }
+
+          start "$IMAGE_URI"
+          if healthy; then
+            echo "Deployed $IMAGE_URI"
+            docker image prune -f >/dev/null
+            exit 0
+          fi
+
+          echo "New version failed its health check." >&2
+          docker logs --tail 30 "$CONTAINER_NAME" >&2 || true
+          if [ -n "$PREV_IMAGE" ]; then
+            echo "Rolling back to the previous image." >&2
+            start "$PREV_IMAGE"
+            healthy && echo "Rollback is healthy." >&2
+          fi
+          exit 1
+          REMOTE
+
+      - name: Smoke test from the runner
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://${{ steps.instance.outputs.ip }}:${HOST_PORT}/login" || true)
+            [ "$code" = "200" ] && { echo "App is up (HTTP 200)"; exit 0; }
+            sleep 3
+          done
+          echo "::warning::App did not answer from the public internet on port ${HOST_PORT}. Check the security group."
+          exit 1
+
+      # Always close the SSH rule, even if an earlier step failed.
+      - name: Close SSH for this runner
+        if: always() && steps.instance.outputs.sg != ''
+        run: |
+          aws ec2 revoke-security-group-ingress --group-id "${{ steps.instance.outputs.sg }}" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=${{ steps.instance.outputs.runner_ip }}/32}]" || true
