@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in - Bedrock Chat</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="auth-body">
+  <form id="authForm" class="auth-card">
+    <h1>Bedrock Chat</h1>
+    <p id="authSub" class="auth-sub">Sign in to continue</p>
+    <label>Email <input id="email" type="email" autocomplete="email" required maxlength="254"></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required minlength="8"></label>
+    <label id="confirmRow" hidden>Confirm password <input id="confirm" type="password" autocomplete="new-password" minlength="8"></label>
+    <p id="authError" class="auth-error" role="alert"></p>
+    <button id="authSubmit" type="submit" class="primary">Sign in</button>
+    <p class="auth-switch"><span id="switchText">No account?</span> <a href="#" id="switchLink">Create one</a></p>
+  </form>
+  <script>
+    let mode = "login";
+    const $ = id => document.getElementById(id);
+    function setMode(m) {
+      mode = m;
+      const reg = m === "register";
+      $("authSub").textContent = reg ? "Create an account with your email (10 free messages)" : "Sign in to continue";
+      $("authSubmit").textContent = reg ? "Create account" : "Sign in";
+      $("switchText").textContent = reg ? "Already have an account?" : "No account?";
+      $("switchLink").textContent = reg ? "Sign in" : "Create one";
+      $("password").autocomplete = reg ? "new-password" : "current-password";
+      $("confirmRow").hidden = !reg;
+      $("confirm").required = reg;
+      $("confirm").value = "";
+      $("authError").textContent = "";
+    }
+    $("switchLink").addEventListener("click", e => { e.preventDefault(); setMode(mode === "login" ? "register" : "login"); });
+    $("authForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      if (mode === "register" && $("password").value !== $("confirm").value) {
+        $("authError").textContent = "Passwords do not match.";
+        return;
+      }
+      $("authSubmit").disabled = true;
+      try {
+        const res = await fetch(mode === "login" ? "/api/login" : "/api/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: $("email").value,password: $("password").value, confirm_password: $("confirm").value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Something went wrong.");
+        location.href = "/";
+      } catch (err) {
+        $("authError").textContent = err.message;
+      } finally {
+        $("authSubmit").disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

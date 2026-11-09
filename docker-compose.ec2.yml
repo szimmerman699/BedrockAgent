@@ -1,0 +1,7 @@
+# Override for EC2: credentials come from the instance's IAM role via the metadata service.
+services:
+  app:
+    environment:
+      AWS_VERIFY_SSL: "true"
+    volumes:
+      - chat-data:/data

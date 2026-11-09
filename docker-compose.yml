@@ -1,0 +1,24 @@
+# Local (uses your AWS CLI config):
+#   docker compose up -d --build
+# EC2 (uses the instance IAM role, no keys needed):
+#   docker compose -f docker-compose.yml -f docker-compose.ec2.yml up -d --build
+services:
+  app:
+    build: .
+    image: develeap-chat
+    container_name: develeap-chat
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      AWS_REGION: us-east-1
+      AWS_VERIFY_SSL: "false"   # local dev only; overridden to true on EC2
+      FREE_MESSAGE_LIMIT: "${FREE_MESSAGE_LIMIT:-10}"
+      PAYMENT_URL: "${PAYMENT_URL:-}"          # e.g. a Stripe Payment Link shown on the paywall
+      SECRET_KEY: "${SECRET_KEY:-}"            # optional; otherwise generated once and stored in the DB
+    volumes:
+      - chat-data:/data
+      - ${USERPROFILE:-${HOME}}/.aws:/home/appuser/.aws:ro
+
+volumes:
+  chat-data:

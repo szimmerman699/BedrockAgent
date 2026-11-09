@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bedrock Chat</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <div>
+          <h1>Bedrock Chat</h1>
+          <p class="model" title="{{ model_id }}">{{ model_id }}</p>
+        </div>
+      </div>
+      <div class="actions">
+        <span id="ctx" class="quota" hidden title="Context limiting is on"></span>
+        <span id="quota" class="quota" hidden></span>
+        <button id="upgradeBtn" class="ghost upgrade" type="button" hidden>Get unlimited · $10/month</button>
+        <span id="tokens" class="tokens" title="Tokens used in this session">In 0 · Out 0</span>
+        <button id="settingsBtn" class="ghost" type="button" aria-expanded="false">Settings</button>
+        <button id="historyBtn" class="ghost" type="button" aria-expanded="false">History</button>
+        <button id="clear" class="ghost" type="button">New chat</button>
+        <button id="logout" class="ghost" type="button" title="Sign out">Sign out</button>
+      </div>
+    </header>
+
+    <form id="settingsPanel" class="settings" hidden>
+      <label>System prompt
+        <textarea id="setPrompt" rows="4"></textarea>
+      </label>
+      <label class="check">
+        <span><input id="setLimit" type="checkbox"> Limit context window to the last
+          <input id="setWindow" type="number" min="1" max="20" step="1" class="inline-num"> messages</span>
+        <small>Your last N messages (and their replies) are sent in full; older ones are compacted into a short summary, so input tokens stay steady.</small>
+      </label>
+      <div class="row">
+        <label>Max tokens <input id="setMax" type="number" min="1" max="64000" step="1"></label>
+        <label>Temperature <input id="setTemp" type="number" min="0" max="1" step="0.1"></label>
+      </div>
+      <div class="row">
+        <button type="submit" class="ghost">Save</button>
+        <button type="button" id="setReset" class="ghost">Reset to defaults</button>
+        <span id="setStatus" class="status"></span>
+      </div>
+    </form>
+
+    <div id="historyPanel" class="history" hidden>
+      <ul id="historyList"></ul>
+    </div>
+
+    <main id="chat" class="chat" aria-live="polite">
+      <div id="welcome" class="welcome">
+        <h2>How can I help today?</h2>
+        <p>Ask a question or pick a suggestion to get started.</p>
+        <div class="chips">
+          <button class="chip" type="button">What is the capital of France?</button>
+          <button class="chip" type="button">Explain AWS Bedrock in simple terms</button>
+          <button class="chip" type="button">Write a Python function to reverse a string</button>
+        </div>
+      </div>
+    </main>
+
+    <div id="paywall" class="paywall" hidden>
+      <strong>You have used your 10 free messages.</strong>
+      <span id="paywallText">Get unlimited messages for $10/month.</span>
+      <button id="paywallBtn" class="primary" type="button">Get unlimited · $10/month</button>
+    </div>
+
+    <form id="form" class="composer" autocomplete="off">
+      <textarea id="input" rows="1" placeholder="Message Bedrock Chat…" aria-label="Message" required></textarea>
+      <button id="send" type="submit" aria-label="Send">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      </button>
+    </form>
+    <p class="hint">Enter to send · Shift+Enter for a new line</p>
+  </div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
